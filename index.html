@@ -1,0 +1,374 @@
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { 
+  Mic, MicOff, Book, Search, AlertTriangle, 
+  ChevronRight, ChevronLeft, RotateCcw, 
+  Eye, EyeOff, Settings, Moon, Sun, 
+  CheckCircle, PlayCircle, X 
+} from 'lucide-react';
+
+const QURAN_API_BASE = "https://api.alquran.cloud/v1";
+
+const App = () => {
+  // --- إدارة الحالة (State Management) ---
+  const [surahs, setSurahs] = useState([]);
+  const [selectedSurahNum, setSelectedSurahNum] = useState(1);
+  const [surahData, setSurahData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [isRecording, setIsRecording] = useState(false);
+  const [currentWordIndex, setCurrentWordIndex] = useState(-1);
+  const [mistakes, setMistakes] = useState([]);
+  const [isHiddenMode, setIsHiddenMode] = useState(false); // ميزة التسميع (إخفاء النص)
+  const [isDarkMode, setIsDarkMode] = useState(false);
+  const [showSurahList, setShowSurahList] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  
+  const recognitionRef = useRef(null);
+
+  // --- جلب البيانات (Data Fetching) ---
+  useEffect(() => {
+    fetch(`${QURAN_API_BASE}/surah`)
+      .then(res => res.json())
+      .then(data => setSurahs(data.data))
+      .catch(err => console.error("Error fetching surahs", err));
+  }, []);
+
+  useEffect(() => {
+    setLoading(true);
+    fetch(`${QURAN_API_BASE}/surah/${selectedSurahNum}`)
+      .then(res => res.json())
+      .then(data => {
+        setSurahData(data.data);
+        setLoading(false);
+        resetSession();
+      })
+      .catch(err => {
+        console.error("Error fetching surah content", err);
+        setLoading(false);
+      });
+  }, [selectedSurahNum]);
+
+  const allWords = useMemo(() => {
+    if (!surahData) return [];
+    return surahData.ayahs.map(ayah => ayah.text.split(' ')).flat();
+  }, [surahData]);
+
+  // --- إعداد محرك التعرف على الصوت (Speech Engine) ---
+  useEffect(() => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (SpeechRecognition) {
+      recognitionRef.current = new SpeechRecognition();
+      recognitionRef.current.continuous = true;
+      recognitionRef.current.interimResults = true;
+      recognitionRef.current.lang = 'ar-SA';
+
+      recognitionRef.current.onresult = (event) => {
+        const transcript = Array.from(event.results)
+          .map(result => result[0].transcript)
+          .join(' ');
+        processSpeech(transcript);
+      };
+
+      recognitionRef.current.onend = () => {
+        if (isRecording) {
+            try {
+                recognitionRef.current.start();
+            } catch (e) {
+                console.log("Recognition restart attempt");
+            }
+        }
+      };
+    }
+
+    return () => {
+        if (recognitionRef.current) recognitionRef.current.stop();
+    };
+  }, [isRecording, allWords, currentWordIndex]);
+
+  // --- منطق المعالجة (AI Matching) ---
+  const clean = (text) => text.replace(/[\u064B-\u065F]/g, "").trim();
+
+  const processSpeech = (transcript) => {
+    const spoken = clean(transcript).split(/\s+/);
+    const lastWord = spoken[spoken.length - 1];
+    
+    if (!lastWord || allWords.length === 0) return;
+
+    // البحث في النطاق القادم (Look-ahead) لمحاكاة ذكاء تطبيق ترتيل
+    const searchRange = 6; 
+    const startSearch = currentWordIndex + 1;
+    const sliceToCheck = allWords.slice(startSearch, startSearch + searchRange);
+
+    let matchIdx = -1;
+    sliceToCheck.forEach((target, i) => {
+      const cleanedTarget = clean(target);
+      // مقارنة مرنة للكلمات
+      if (cleanedTarget.includes(lastWord) || lastWord.includes(cleanedTarget)) {
+        matchIdx = startSearch + i;
+      }
+    });
+
+    if (matchIdx !== -1) {
+      setCurrentWordIndex(matchIdx);
+      // التمرير التلقائي للكلمة الحالية
+      const el = document.getElementById(`word-${matchIdx}`);
+      el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    } else if (lastWord.length > 3) {
+      // إذا نطق كلمة طويلة ولم يجدها في السياق القادم، نعتبرها خطأ محتمل
+      handleMistake(startSearch);
+    }
+  };
+
+  const handleMistake = (idx) => {
+    if (navigator.vibrate) navigator.vibrate([50, 50, 50]);
+    if (!mistakes.includes(idx)) {
+      setMistakes(prev => [...prev, idx]);
+    }
+  };
+
+  const resetSession = () => {
+    setCurrentWordIndex(-1);
+    setMistakes([]);
+  };
+
+  const toggleRecording = () => {
+    if (isRecording) {
+      recognitionRef.current?.stop();
+    } else {
+      resetSession();
+      recognitionRef.current?.start();
+    }
+    setIsRecording(!isRecording);
+  };
+
+  // --- مكون اختيار السورة (Surah Selector) ---
+  const SurahSelector = () => (
+    <div className={`fixed inset-0 z-[100] bg-black/50 backdrop-blur-sm transition-all duration-300 ${showSurahList ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
+      <div className={`absolute right-0 top-0 bottom-0 w-full max-w-md bg-white dark:bg-slate-900 shadow-2xl p-6 transition-transform duration-500 ${showSurahList ? 'translate-x-0' : 'translate-x-full'}`}>
+        <div className="flex justify-between items-center mb-6">
+          <h3 className="text-xl font-bold dark:text-white">اختر سورة</h3>
+          <button onClick={() => setShowSurahList(false)} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full dark:text-white transition-colors">
+            <X size={24} />
+          </button>
+        </div>
+        <div className="relative mb-4">
+          <input 
+            type="text" 
+            placeholder="ابحث عن سورة..."
+            className="w-full p-3 pr-10 rounded-xl bg-slate-50 dark:bg-slate-800 dark:text-white border-none focus:ring-2 focus:ring-emerald-500 outline-none"
+            onChange={(e) => setSearchQuery(e.target.value)}
+          />
+          <Search className="absolute right-3 top-3.5 text-slate-400" size={18} />
+        </div>
+        <div className="overflow-y-auto h-[calc(100vh-180px)] space-y-2 pr-2 custom-scrollbar">
+          {surahs.filter(s => s.name.includes(searchQuery) || s.englishName.toLowerCase().includes(searchQuery.toLowerCase())).map(s => (
+            <button 
+              key={s.number}
+              onClick={() => { setSelectedSurahNum(s.number); setShowSurahList(false); }}
+              className={`w-full flex justify-between items-center p-4 rounded-xl transition-all ${selectedSurahNum === s.number ? 'bg-emerald-600 text-white shadow-lg' : 'hover:bg-emerald-50 dark:hover:bg-slate-800 dark:text-slate-300'}`}
+            >
+              <div className="flex items-center gap-3">
+                <span className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold ${selectedSurahNum === s.number ? 'bg-emerald-500' : 'bg-slate-100 dark:bg-slate-700'}`}>
+                  {s.number}
+                </span>
+                <span className="font-serif text-lg">{s.name}</span>
+              </div>
+              <span className="text-xs opacity-60">{s.numberOfAyahs} آية</span>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className={`min-h-screen transition-colors duration-500 ${isDarkMode ? 'bg-[#0f172a] text-slate-200' : 'bg-[#fcfdfd] text-slate-900'}`} dir="rtl">
+      
+      <SurahSelector />
+
+      {/* شريط الأدوات العلوي (Header) */}
+      <header className={`sticky top-0 z-40 backdrop-blur-lg border-b ${isDarkMode ? 'bg-slate-900/80 border-slate-800' : 'bg-white/80 border-emerald-50'} px-6 py-4 shadow-sm`}>
+        <div className="max-w-5xl mx-auto flex justify-between items-center">
+          <div className="flex items-center gap-4">
+            <button 
+              onClick={() => setShowSurahList(true)}
+              className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl transition-all shadow-lg shadow-emerald-200 dark:shadow-none active:scale-95"
+            >
+              <Book size={18} />
+              <span className="font-bold">{surahData?.name || "قائمة السور"}</span>
+            </button>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button onClick={() => setIsDarkMode(!isDarkMode)} className="p-3 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors" title="الوضع الليلي/النهاري">
+              {isDarkMode ? <Sun size={20} className="text-amber-400" /> : <Moon size={20} className="text-slate-600" />}
+            </button>
+            <button 
+              onClick={() => setIsHiddenMode(!isHiddenMode)} 
+              className={`p-3 rounded-xl transition-colors ${isHiddenMode ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400' : 'hover:bg-slate-100 dark:hover:bg-slate-800'}`}
+              title="وضعية التسميع (إخفاء النص)"
+            >
+              {isHiddenMode ? <EyeOff size={20} /> : <Eye size={20} />}
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {/* منطقة عرض المصحف (Main Content) */}
+      <main className="max-w-5xl mx-auto px-6 py-10 mb-40">
+        {loading ? (
+          <div className="flex flex-col items-center justify-center py-40 gap-4">
+            <div className="w-16 h-16 border-4 border-emerald-600 border-t-transparent rounded-full animate-spin"></div>
+            <p className="text-emerald-600 font-medium animate-pulse">جاري تحميل السورة الكريمة...</p>
+          </div>
+        ) : (
+          <div className={`relative p-8 md:p-16 rounded-[2.5rem] shadow-2xl shadow-emerald-900/5 border transition-all ${isDarkMode ? 'bg-slate-900/50 border-slate-800' : 'bg-white border-emerald-50'}`}>
+            
+            {/* عنوان السورة */}
+            <div className="text-center mb-16 relative">
+              <div className="absolute inset-0 flex items-center justify-center opacity-5 pointer-events-none">
+                <Book size={200} className="text-emerald-900" />
+              </div>
+              <h2 className="text-5xl font-serif text-emerald-700 dark:text-emerald-500 mb-4">{surahData?.name}</h2>
+              <p className="text-slate-400 font-medium uppercase tracking-widest text-sm">
+                سورة {surahData?.revelationType === 'Meccan' ? 'مكية' : 'مدنية'} • {surahData?.numberOfAyahs} آيات
+              </p>
+              <div className="flex justify-center mt-6">
+                <div className="h-1 w-24 bg-gradient-to-r from-transparent via-emerald-500 to-transparent rounded-full"></div>
+              </div>
+            </div>
+
+            {/* شبكة الكلمات */}
+            <div className="flex flex-wrap justify-center gap-y-10 leading-[4.5rem] text-right" style={{ direction: 'rtl' }}>
+              {surahData?.ayahs.map((ayah, aIdx) => (
+                <div key={aIdx} className="inline group">
+                  {ayah.text.split(' ').map((word, wIdx) => {
+                    const globalIdx = surahData.ayahs.slice(0, aIdx).reduce((acc, curr) => acc + curr.text.split(' ').length, 0) + wIdx;
+                    const isRead = globalIdx <= currentWordIndex;
+                    const isUpcoming = globalIdx === currentWordIndex + 1;
+                    const hasError = mistakes.includes(globalIdx);
+
+                    return (
+                      <span
+                        key={wIdx}
+                        id={`word-${globalIdx}`}
+                        className={`
+                          relative inline-block px-1.5 mx-0.5 text-4xl md:text-5xl font-serif transition-all duration-500 rounded-xl cursor-default
+                          ${isRead ? 'text-emerald-600 dark:text-emerald-400 font-bold scale-105' : ''}
+                          ${!isRead && isHiddenMode ? 'blur-md opacity-20' : ''}
+                          ${!isRead && !isHiddenMode ? (isDarkMode ? 'text-slate-700' : 'text-slate-300') : ''}
+                          ${isUpcoming && isRecording ? 'ring-2 ring-emerald-400 ring-offset-4 ring-offset-transparent animate-pulse' : ''}
+                          ${hasError ? 'bg-red-50 text-red-500 dark:bg-red-900/20 dark:text-red-400 ring-2 ring-red-200' : ''}
+                        `}
+                      >
+                        {word}
+                        {hasError && (
+                          <span className="absolute -top-6 left-1/2 -translate-x-1/2 text-red-500">
+                            <AlertTriangle size={14} fill="currentColor" />
+                          </span>
+                        )}
+                      </span>
+                    );
+                  })}
+                  <span className="inline-flex items-center justify-center w-12 h-12 mx-4 border-2 border-emerald-100 dark:border-slate-800 rounded-full text-emerald-700 dark:text-emerald-500 font-bold text-xl bg-emerald-50/50 dark:bg-slate-800/50">
+                    {ayah.numberInSurah}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </main>
+
+      {/* لوحة التحكم العائمة (Tarteel Style Footer) */}
+      <footer className="fixed bottom-8 left-1/2 -translate-x-1/2 w-[95%] max-w-2xl z-50">
+        <div className={`p-4 rounded-3xl shadow-2xl backdrop-blur-xl border flex flex-col items-center gap-4 ${isDarkMode ? 'bg-slate-900/90 border-slate-700' : 'bg-white/90 border-emerald-100'}`}>
+          
+          {/* مؤشرات الحالة */}
+          <div className="w-full flex items-center justify-between px-4">
+            <div className={`flex items-center gap-2 px-3 py-1 rounded-full text-xs font-bold ${mistakes.length > 0 ? 'bg-red-100 text-red-600' : 'bg-emerald-100 text-emerald-600'}`}>
+              <div className={`w-2 h-2 rounded-full ${mistakes.length > 0 ? 'bg-red-600 animate-pulse' : 'bg-emerald-600'}`}></div>
+              {mistakes.length > 0 ? `تم رصد ${mistakes.length} أخطاء` : (isRecording ? 'جاري الاستماع...' : 'جاهز للبدء')}
+            </div>
+            
+            <div className="flex gap-4 text-[10px] font-bold text-slate-400 uppercase tracking-tighter">
+              <span className="flex items-center gap-1"><CheckCircle size={12} className="text-emerald-500"/> {currentWordIndex + 1} كلمة</span>
+              <button onClick={resetSession} className="hover:text-emerald-600 transition-colors flex items-center gap-1 active:scale-95">
+                <RotateCcw size={12} /> إعادة المحاولة
+              </button>
+            </div>
+          </div>
+
+          {/* أزرار التحكم الرئيسية */}
+          <div className="flex items-center justify-center gap-10 w-full">
+            <button 
+              onClick={() => setSelectedSurahNum(prev => Math.max(1, prev - 1))}
+              className="p-4 rounded-2xl hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 transition-all active:scale-90"
+            >
+              <ChevronRight size={28} />
+            </button>
+
+            <button
+              onClick={toggleRecording}
+              className={`
+                relative w-20 h-20 rounded-full flex items-center justify-center transition-all transform active:scale-90 shadow-2xl
+                ${isRecording 
+                  ? 'bg-red-500 shadow-red-500/40' 
+                  : 'bg-emerald-600 shadow-emerald-600/40 hover:scale-105'}
+              `}
+            >
+              {isRecording ? (
+                <div className="flex items-center justify-center">
+                  <MicOff size={32} className="text-white" />
+                  <div className="absolute inset-0 rounded-full border-4 border-white/30 animate-ping"></div>
+                </div>
+              ) : (
+                <Mic size={32} className="text-white" />
+              )}
+            </button>
+
+            <button 
+              onClick={() => setSelectedSurahNum(prev => Math.min(114, prev + 1))}
+              className="p-4 rounded-2xl hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 transition-all active:scale-90"
+            >
+              <ChevronLeft size={28} />
+            </button>
+          </div>
+
+          {/* شريط التقدم */}
+          <div className="w-full h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+            <div 
+              className="h-full bg-emerald-500 transition-all duration-700" 
+              style={{ width: `${((currentWordIndex + 1) / (allWords.length || 1)) * 100}%` }}
+            ></div>
+          </div>
+        </div>
+      </footer>
+
+      {/* التنسيقات العامة المصلحة (Fixed Styles) */}
+      <style>
+        {`
+          @import url('https://fonts.googleapis.com/css2?family=Amiri:wght@400;700&display=swap');
+          
+          .font-serif { 
+            font-family: 'Amiri', serif; 
+          }
+          
+          .custom-scrollbar::-webkit-scrollbar { 
+            width: 4px; 
+          }
+          
+          .custom-scrollbar::-webkit-scrollbar-thumb { 
+            background: #10b981; 
+            border-radius: 10px; 
+          }
+
+          body {
+            overflow-x: hidden;
+          }
+        `}
+      </style>
+    </div>
+  );
+};
+
+export default App;
